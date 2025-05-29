@@ -54,7 +54,8 @@ def get_bmi_classification_value(imc):
 
 
 # Carrega dados de saúde personalizados
-df = pd.read_csv("https://raw.githubusercontent.com/bruno-8km/meuprojeto/master/points_per_health.csv")
+#df = pd.read_csv("https://raw.githubusercontent.com/bruno-8km/meuprojeto/master/points_per_health.csv")
+df = pd.read_csv("https://github.com/bruno-8km/shiny/blob/master/points_per_health.csv")
 
 # Adiciona colunas de exemplo 'PAS', 'PAD', e 'IMC'
 if 'PAS' not in df.columns or 'PAD' not in df.columns:

@@ -9,7 +9,8 @@ from scipy.interpolate import make_interp_spline
 
 # === Carregamento e preparação do dataframe df (sem mudanças) ===
 # Carrega dados de saúde personalizados
-df = pd.read_csv("https://raw.githubusercontent.com/bruno-8km/meuprojeto/master/points_per_health.csv")
+#df = pd.read_csv("https://raw.githubusercontent.com/bruno-8km/meuprojeto/master/points_per_health.csv")
+df = pd.read_csv("https://github.com/bruno-8km/shiny/blob/master/points_per_health.csv")
 
 # === Dicionários e configurações ===
 colors = {
