@@ -1,251 +1,443 @@
-from shiny import ui, reactive, render, App
+from shiny import App, render, ui, reactive
 import pandas as pd
-import matplotlib.pyplot as plt
 import numpy as np
-from scipy.interpolate import make_interp_spline
+import plotly.express as px
 
-# === Funções de classificação (sem mudanças) ===
-# ... [mesmas funções get_bp_classification_value e get_bmi_classification_value aqui] ...
+CSV_URL = "https://raw.githubusercontent.com/bruno-8km/shiny/refs/heads/master/points_per_health.csv"
 
-# === Carregamento e preparação do dataframe df (sem mudanças) ===
-# Carrega dados de saúde personalizados
-#df = pd.read_csv("https://raw.githubusercontent.com/bruno-8km/meuprojeto/master/points_per_health.csv")
-df = pd.read_csv("https://raw.githubusercontent.com/bruno-8km/shiny/refs/heads/master/points_per_health.csv")
-
-# === Dicionários e configurações ===
-colors = {
-    "Water": "#007ED5", "Air": "#58BDDC", "Nutrition": "#B2DA51",
-    "Sun": "#FBDC61", "Temperance": "#F8A754", "Exercise": "#F26E52",
-    "Rest": "#E16BA8", "Trust": "#AA63A7",
-}
-health_factors_en = list(colors.keys())
-factor_display_names = {
-    "Water": "Água", "Air": "Ar Puro", "Nutrition": "Nutrição", "Sun": "Luz Solar",
-    "Temperance": "Temperança", "Exercise": "Exercício", "Rest": "Repouso", "Trust": "Confiança em Deus",
-}
-column_name_translations = {
-    "ID": "ID", "Name": "Nome", "Age": "Idade", "Sex": "Sexo",
-    "PAS": "PAS (mmHg)", "PAD": "PAD (mmHg)", "Weight": "Peso (kg)", "Height": "Altura (cm)",
-    "Blood": "Pressão Sanguínea", "IMC": "IMC (kg/m²)",
-    **factor_display_names
+COLORS = {
+    "Água": "#007ED5", "Ar": "#58BDDC", "Nutrição": "#B2DA51",
+    "Luz Solar": "#FBDC61", "Temperança": "#F8A754", "Exercício Físico": "#F26E52",
+    "Descanso": "#E16BA8", "Confiança em Deus": "#AA63A7"
 }
 
-bp_slider_min_val = 0
-bp_slider_max_val = 5
-bp_slider_default_selected = 1
-
-bmi_slider_marks_dict_full = {
-    0: "Magreza grave (< 16.0)",
-    1: "Magreza moderada (16.0 – 16.9)",
-    2: "Magreza leve (17.0 – 18.4)",
-    3: "Peso normal (18.5 – 24.9)",
-    4: "Sobrepeso (25.0 – 29.9)",
-    5: "Obesidade grau I (30.0 – 34.9)",
-    6: "Obesidade grau II (35.0 – 39.9)",
-    7: "Obesidade grau III (>= 40.0)"
+MAXIMOS = {
+    "Água": 10, "Ar": 10, "Nutrição": 10,
+    "Luz Solar": 10, "Temperança": 10,
+    "Exercício Físico": 10, "Descanso": 10,
+    "Confiança em Deus": 10
 }
-bmi_slider_min_val = 0
-bmi_slider_max_val = len(bmi_slider_marks_dict_full) - 1
-bmi_slider_default_selected = 3
 
-# === CORRIGIDO: UI ===
-sidebar = ui.sidebar(
-    ui.input_radio_buttons("x_mode", "Eixo X:", {"score": "Pontuação", "percent": "Porcentagem"}, selected="score"),
-    ui.input_slider("n_pessoas", "Número de pessoas a incluir:", min=1, max=len(df), value=len(df), step=1),
-    ui.input_selectize(
-        "sex_select", "Gênero:",
-        choices={"All": "Todos", "M": "Masculino", "F": "Feminino", "N": "Não Informado"},
-        multiple=True, selected="All"
-    ),
-    ui.tags.hr(),
-    ui.input_switch("apply_bp_filter", "Índice de Pressão Arterial", False),
-    ui.panel_conditional("input.apply_bp_filter",
-        ui.input_slider(
-            "bp_level_slider",
-            "Nível de Pressão Arterial:",
-            min=bp_slider_min_val,
-            max=bp_slider_max_val,
-            value=bp_slider_default_selected,
-            step=1,
-        ),
-    ),
-    ui.tags.hr(),
-    ui.input_switch("apply_bmi_filter", "Índice do IMC", False),
-    ui.panel_conditional("input.apply_bmi_filter",
-        ui.input_slider(
-            "bmi_level_slider",
-            "Nível de IMC:",
-            min=bmi_slider_min_val,
-            max=bmi_slider_max_val,
-            value=bmi_slider_default_selected,
-            step=1,
-        ),
-    ),
-    open="desktop"
-)
+CLASSIFICACAO_IMC = [
+    "Magreza grave (<16)",
+    "Magreza moderada (16-16.9)",
+    "Magreza leve (17-18.4)",
+    "Peso normal (18.5-24.9)",
+    "Sobrepeso (25-29.9)",
+    "Obesidade grau I (30-34.9)",
+    "Obesidade grau II (35-39.9)", 
+    "Obesidade grau III (≥40)"
+]
 
-# === UI principal com sidebar e navsets ===
+CLASSIFICACAO_PRESSAO = [
+    "Hipotensão (PAS<90 ou PAD<60)",
+    "Normal (PAS<120 e PAD<80)",
+    "Elevada (PAS 120-129 e PAD<80)",
+    "Hipertensão Estágio 1 (PAS 130-139 ou PAD 80-89)",
+    "Hipertensão Estágio 2 (PAS≥140 ou PAD≥90)",
+    "Crise Hipertensiva (PAS≥180 ou PAD≥120)"
+]
+
 app_ui = ui.page_sidebar(
-    sidebar,
-    ui.navset_pill(
-        ui.nav_panel("Home",
-            ui.layout_columns(
-                ui.card(
-                    ui.card_header("Controle dos Remédios Naturais"),
-                    ui.tags.h5("Os 8 Remédios Naturais"),
-                    ui.tags.hr(),
-                    ui.tags.style("""
-                        .checkbox-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 2px 10px; }
-                        .checkbox-grid .form-check { margin-bottom: 0.1rem; padding-left: 1.5em; }
-                        .checkbox-grid .form-check-input { margin-top: 0.2em; }
-                    """),
-                    ui.tags.div(
-                        *[
-                            ui.input_checkbox(f"chk_{factor_en}", factor_display_names[factor_en], True)
-                            for factor_en in health_factors_en
-                        ],
-                        class_="checkbox-grid"
-                    )
-                ),
-                ui.card(
-                    ui.card_header("Distribuição por Remédio Natural"),
-                    ui.output_plot("area_plot")
-                ),
-                ui.card(
-                    ui.card_header("Tabela dos Dados de Remédios Naturais"),
-                    ui.output_data_frame("table")
-                )
-            )
+    ui.sidebar(
+        ui.h4("Filtros e Controles", class_="text-center"),
+        ui.hr(),
+        
+        # Contador de gêneros com emojis
+        ui.output_ui("contador_generos"),
+        
+        # Filtro de gênero com labels modificados
+        ui.input_selectize(
+            "filtro_genero",
+            "Filtrar por Gênero:",
+            choices={"M": "Masculino", "F": "Feminino", "N": "Não Informado"},
+            selected=["M", "F", "N"],
+            multiple=True
         ),
-        ui.nav_panel("Gráficos",
-            ui.card(
-                ui.card_header("Distribuição do IMC"),
-                ui.output_plot("bmi_plot")
+        
+        ui.input_slider(
+            "filtro_imc",
+            "Classificação de IMC:",
+            min=0,
+            max=7,
+            value=[0, 7],
+            step=1,
+            ticks=False
+        ),
+        ui.output_text_verbatim("texto_classificacao_imc"),
+        
+        ui.input_slider(
+            "filtro_pressao",
+            "Classificação de Pressão:",
+            min=0,
+            max=5,
+            value=[0, 5],
+            step=1,
+            ticks=False
+        ),
+        ui.output_text_verbatim("texto_classificacao_pressao"),
+        
+        ui.hr(),
+        
+        ui.input_slider(
+            "num_pessoas",
+            "Número de Pessoas:",
+            min=1,
+            max=300,
+            value=50,
+            step=1
+        ),
+        
+        ui.input_checkbox_group(
+            "remedios_selecionados",
+            "Filtro dos 8 Remédios Naturais:",
+            choices=list(COLORS.keys()),
+            selected=list(COLORS.keys())
+        ),
+        
+        ui.input_radio_buttons(
+            "tipo_eixo_x",
+            "Controles do gráfico dos 8 Remédios:",
+            {"pontos": "Número de Pontos",
+             "porcentagem": "Porcentagem Total"}
+        ),
+        
+        width=300,
+        open="closed"
+    ),
+    
+    # Sistema de abas alternativo
+    ui.tags.div(
+        ui.tags.ul(
+            ui.tags.li(
+                ui.tags.a("Gráfico dos 8 Remédios Naturais", href="#", onclick="showTab('grafico-principal')"),
+                class_="active"
             ),
-            ui.card(
-                ui.card_header("Distribuição da Pressão Arterial"),
-                ui.output_plot("bp_plot")
-            )
-        )
+            ui.tags.li(
+                ui.tags.a("Gráfico do IMC", href="#", onclick="showTab('grafico-imc')")
+            ),
+            ui.tags.li(
+                ui.tags.a("Gráfico de Pressão", href="#", onclick="showTab('grafico-pressao')")
+            ),
+            ui.tags.li(
+                ui.tags.a("Tabela de Dados do App", href="#", onclick="showTab('tabela-dados')")
+            ),
+            class_="nav nav-tabs"
+        ),
+        
+        ui.tags.div(
+            ui.tags.div(
+                ui.output_ui("plotly_container"),
+                id="grafico-principal",
+                class_="tab-pane active"
+            ),
+            ui.tags.div(
+                ui.output_ui("grafico_imc"),
+                id="grafico-imc",
+                class_="tab-pane"
+            ),
+            ui.tags.div(
+                ui.output_ui("grafico_pressao"),
+                id="grafico-pressao",
+                class_="tab-pane"
+            ),
+            ui.tags.div(
+                ui.output_data_frame("tabela_dados_saude"),
+                id="tabela-dados",
+                class_="tab-pane"
+            ),
+            class_="tab-content"
+        ),
+        
+        ui.tags.script("""
+            function showTab(tabId) {
+                // Esconde todos os conteúdos
+                document.querySelectorAll('.tab-pane').forEach(function(tab) {
+                    tab.classList.remove('active');
+                });
+                
+                // Remove a classe active de todas as abas
+                document.querySelectorAll('.nav-tabs li').forEach(function(tab) {
+                    tab.classList.remove('active');
+                });
+                
+                // Mostra o conteúdo selecionado
+                document.getElementById(tabId).classList.add('active');
+                
+                // Ativa a aba clicada
+                event.currentTarget.parentElement.classList.add('active');
+                
+                // Previne o comportamento padrão do link
+                return false;
+            }
+        """)
     )
 )
 
-# === SERVER ===
 def server(input, output, session):
+    # Função para classificar o IMC
+    def classificar_imc(imc):
+        if imc < 16.0: return 0
+        if 16.0 <= imc <= 16.9: return 1
+        if 17.0 <= imc <= 18.4: return 2
+        if 18.5 <= imc <= 24.9: return 3
+        if 25.0 <= imc <= 29.9: return 4
+        if 30.0 <= imc <= 34.9: return 5
+        if 35.0 <= imc <= 39.9: return 6
+        if imc >= 40.0: return 7
+        return 3  # Default
+    
+    # Função para classificar a pressão arterial
+    def classificar_pressao(pas, pad):
+        if pas < 90 or pad < 60: return 0  # Hipotensão
+        if pas >= 180 or pad >= 120: return 5  # Crise Hipertensiva
+        if pas >= 140 or pad >= 90: return 4  # Hipertensão Estágio 2
+        if (130 <= pas <= 139) or (80 <= pad <= 89): return 3  # Hipertensão Estágio 1
+        if (120 <= pas <= 129) and (pad < 80): return 2  # Elevada
+        if pas < 120 and pad < 80: return 1  # Normal
+        return 1  # Default para Normal
 
-    @reactive.Effect
-    @reactive.event(input.chk_all_factors)
-    def _sync_health_factors_action():
-        is_checked = input.chk_all_factors()
-        for factor_en in health_factors_en:
-            ui.update_checkbox(f"chk_{factor_en}", value=is_checked)
-
-    @reactive.Effect
-    def _update_chk_all_factors_status():
-        all_selected = all(input[f"chk_{factor_en}"]() for factor_en in health_factors_en)
-        if input.chk_all_factors() != all_selected:
-            ui.update_checkbox("chk_all_factors", value=all_selected)
-
-    @reactive.Calc
-    def selected_factors_calc():
-        return [factor_en for factor_en in health_factors_en if input[f"chk_{factor_en}"]()]
-
-    @reactive.Calc
-    def filtered_df():
-        df_copy = df.copy()
-        df_filtered = df_copy.head(input.n_pessoas())
-
-        selected_sex_options = input.sex_select()
-        if selected_sex_options and "All" not in selected_sex_options:
-            df_filtered = df_filtered[df_filtered['Sex'].isin(selected_sex_options)]
-
-        if input.apply_bp_filter():
-            selected = input.bp_level_slider()
-            df_filtered = df_filtered[
-                df_filtered.apply(lambda row: get_bp_classification_value(row['PAS'], row['PAD']) == selected, axis=1)
-            ]
-
-        if input.apply_bmi_filter():
-            selected = input.bmi_level_slider()
-            df_filtered = df_filtered[
-                df_filtered['IMC'].apply(lambda v: get_bmi_classification_value(v) == selected)
-            ]
-
-        return df_filtered
-
+    # Texto explicativo para o slider de IMC
     @output
-    @render.plot()
-    def area_plot():
-        current_plot_df = filtered_df()
-        selected_factors_en = selected_factors_calc()
-        x_mode = input.x_mode()
-        fig, ax = plt.subplots(figsize=(10, 6))
+    @render.text
+    def texto_classificacao_imc():
+        min_imc = input.filtro_imc()[0]
+        max_imc = input.filtro_imc()[1]
+        return f"IMC: {CLASSIFICACAO_IMC[min_imc]} a {CLASSIFICACAO_IMC[max_imc]}"
 
-        if current_plot_df.empty or not selected_factors_en:
-            msg = "Nenhum dado disponível para a seleção atual."
-            ax.text(0.5, 0.5, msg, horizontalalignment='center', verticalalignment='center',
-                    transform=ax.transAxes, fontsize=12, color='gray')
-            return fig
-
-        for factor_en in selected_factors_en:
-            if factor_en not in current_plot_df.columns: continue
-            counts = current_plot_df[factor_en].value_counts().sort_index()
-            if counts.empty: continue
-            xs_raw = np.array(counts.index)
-            ys_raw = counts.values
-            k_spline = min(3, len(xs_raw) - 1)
-            try:
-                xs_smooth = np.linspace(xs_raw.min(), xs_raw.max(), 300)
-                spline = make_interp_spline(xs_raw, ys_raw, k=k_spline)
-                ys_smooth = spline(xs_smooth)
-            except Exception:
-                xs_smooth, ys_smooth = xs_raw, ys_raw
-
-            if x_mode == "score":
-                ax.set_xlabel("Pontuação")
-            else:
-                xs_smooth = (xs_smooth / xs_raw.max()) * 100
-                ax.set_xlabel("Porcentagem da pontuação máxima (%)")
-                ax.set_xlim(0, 100)
-
-            ax.fill_between(xs_smooth, np.maximum(0, ys_smooth), alpha=0.3, color=colors[factor_en],
-                            label=factor_display_names[factor_en])
-            ax.plot(xs_smooth, np.maximum(0, ys_smooth), color=colors[factor_en])
-        ax.set_ylabel("Número de Pessoas")
-        ax.set_title("Distribuição por Remédio Natural")
-        ax.legend()
-        ax.grid(True)
-        return fig
-
+    # Texto explicativo para o slider de pressão
     @output
+    @render.text
+    def texto_classificacao_pressao():
+        min_p = input.filtro_pressao()[0]
+        max_p = input.filtro_pressao()[1]
+        return f"Pressão: {CLASSIFICACAO_PRESSAO[min_p]} a {CLASSIFICACAO_PRESSAO[max_p]}"
+
+    # Contador de gêneros com emojis - agora usa dados_filtrados() em vez de dados_completos()
+    @output
+    @render.ui
+    def contador_generos():
+        df = dados_filtrados()  # Alterado para usar dados_filtrados() que considera todos os filtros
+        if df.empty:
+            return ui.div("Nenhum dado para exibir com os filtros atuais", style="color: red;")
+            
+        counts = df['Gênero'].value_counts()
+        
+        # Contagem para cada gênero (usando get para evitar KeyError)
+        m_count = counts.get('M', 0)
+        f_count = counts.get('F', 0)
+        n_count = counts.get('N', 0)
+        
+        return ui.tags.div(
+            ui.tags.div(
+                ui.tags.span("🚹", style="font-size: 1.5em; margin-right: 8px;"),
+                ui.tags.span(f"Masculino: {m_count}"),
+                style="display: flex; align-items: center; margin-bottom: 8px;"
+            ),
+            ui.tags.div(
+                ui.tags.span("🚺", style="font-size: 1.5em; margin-right: 8px;"),
+                ui.tags.span(f"Feminino: {f_count}"),
+                style="display: flex; align-items: center; margin-bottom: 8px;"
+            ),
+            ui.tags.div(
+                ui.tags.span("🔍", style="font-size: 1.5em; margin-right: 8px;"),
+                ui.tags.span(f"Não Informado: {n_count}"),
+                style="display: flex; align-items: center;"
+            ),
+            ui.tags.div(
+                ui.tags.span("👥", style="font-size: 1.5em; margin-right: 8px;"),
+                ui.tags.span(f"Total: {len(df)}"),
+                style="display: flex; align-items: center; margin-top: 8px; font-weight: bold;"
+            ),
+            style="margin-bottom: 15px; padding: 10px; background-color: #f8f9fa; border-radius: 5px;"
+        )
+
+    @reactive.calc
+    def dados_completos():
+        try:
+            df = pd.read_csv(CSV_URL)
+            df['weight'] = pd.to_numeric(df['weight'], errors='coerce')
+            df['height'] = pd.to_numeric(df['height'], errors='coerce')
+            df['IMC'] = df.apply(lambda row: row['weight'] / (row['height']**2) if row['height'] > 0 else np.nan, axis=1)
+            df['IMC'] = df['IMC'].round(2)
+            df['Classificacao_IMC'] = df['IMC'].apply(classificar_imc)
+            df['PAS'] = np.random.randint(90, 141, size=len(df))
+            df['PAD'] = np.random.randint(60, 91, size=len(df))
+            df['Classificacao_Pressao'] = df.apply(lambda row: classificar_pressao(row['PAS'], row['PAD']), axis=1)
+            
+            df = df.rename(columns={
+                'name': 'Nome', 'age': 'Idade', 'sex': 'Gênero',
+                'weight': 'Peso', 'height': 'Altura', 'blood': 'Pressão',
+                'water': 'Água', 'air': 'Ar', 'nutrition': 'Nutrição',
+                'sun': 'Luz Solar', 'temperance': 'Temperança',
+                'exercise': 'Exercício Físico', 'rest': 'Descanso',
+                'trust': 'Confiança em Deus'
+            })
+            
+            return df
+        except Exception as e:
+            print(f"Erro: {e}")
+            return pd.DataFrame({"Erro": [str(e)]})
+
+    @reactive.calc
+    def dados_filtrados():
+        df = dados_completos()
+        
+        # Filtro por gênero
+        if input.filtro_genero():
+            df = df[df['Gênero'].isin(input.filtro_genero())]
+        else:
+            return pd.DataFrame()
+        
+        # Filtro por IMC
+        imc_min, imc_max = input.filtro_imc()
+        df = df[(df['Classificacao_IMC'] >= imc_min) & (df['Classificacao_IMC'] <= imc_max)]
+        
+        # Filtro por pressão arterial
+        pressao_min, pressao_max = input.filtro_pressao()
+        df = df[(df['Classificacao_Pressao'] >= pressao_min) & (df['Classificacao_Pressao'] <= pressao_max)]
+        
+        # Amostragem - agora este filtro é considerado no contador de gêneros
+        n = min(input.num_pessoas(), len(df))
+        return df.sample(n) if n < len(df) else df
+
     @render.data_frame
-    def table():
-        df_current = filtered_df().copy()
-        df_current.columns = [column_name_translations.get(col, col) for col in df_current.columns]
-        return render.DataGrid(df_current)
+    def tabela_dados_saude():
+        df = dados_filtrados()
+        if df.empty:
+            return render.DataGrid(pd.DataFrame({"Mensagem": ["Nenhum dado para exibir com os filtros atuais"]}))
+        return render.DataGrid(df)
 
-    @output
-    @render.plot()
-    def bmi_plot():
-        fig, ax = plt.subplots(figsize=(10, 6))
-        imc_counts = df['IMC'].value_counts().sort_index()
-        ax.fill_between(imc_counts.index, imc_counts.values, color='skyblue', alpha=0.5)
-        ax.set_xlabel('IMC (kg/m²)')
-        ax.set_ylabel('Número de Pessoas')
-        ax.set_title('Distribuição do IMC')
-        return fig
+    @render.ui
+    def plotly_container():
+        df = dados_filtrados()
+        try:
+            if df.empty:
+                return ui.div("Nenhum dado para exibir com os filtros atuais", style="color: red;")
+            
+            remedios_ativos = input.remedios_selecionados()
+            if not remedios_ativos:
+                remedios_ativos = list(COLORS.keys())
+            
+            df_melted = pd.melt(df, 
+                               value_vars=remedios_ativos, 
+                               var_name="Remedio", 
+                               value_name="Pontos")
+            
+            df_melted['Pontos'] = pd.to_numeric(df_melted['Pontos'], errors='coerce')
+            
+            if input.tipo_eixo_x() == "porcentagem":
+                df_melted['Valor'] = df_melted.apply(
+                    lambda row: (row['Pontos'] / MAXIMOS[row['Remedio']]) * 100, 
+                    axis=1
+                )
+                x_label = "Porcentagem do Máximo (%)"
+            else:
+                df_melted['Valor'] = df_melted['Pontos']
+                x_label = "Pontos dos 8 Remédios"
+            
+            df_counts = df_melted.groupby(['Remedio', 'Valor']).size().reset_index(name='NumPessoas')
+            
+            cores_filtradas = {k: v for k, v in COLORS.items() if k in remedios_ativos}
+            
+            fig = px.area(
+                df_counts,
+                x="Valor",
+                y="NumPessoas",
+                color="Remedio",
+                title=f"Gráfico dos 8 Remédios Naturais ({len(df)} pessoas analisadas)",
+                labels={"Valor": x_label, "NumPessoas": "Número de Pessoas", "Remedio": "8 Remédios Naturais"},
+                color_discrete_map=cores_filtradas,
+            )
+            
+            fig.update_layout(
+                hovermode="x unified",
+                xaxis_title=x_label,
+                yaxis_title="Número de Pessoas",
+                showlegend=True
+            )
+            
+            if input.tipo_eixo_x() == "porcentagem":
+                fig.update_xaxes(range=[0, 100])
+            
+            return ui.HTML(fig.to_html(full_html=False))
+            
+        except Exception as e:
+            print(f"Erro no gráfico: {e}")
+            return ui.p(f"Erro ao gerar gráfico: {e}")
 
-    @output
-    @render.plot()
-    def bp_plot():
-        fig, ax = plt.subplots(figsize=(10, 6))
-        bp_categories = df.apply(lambda row: get_bp_classification_value(row['PAS'], row['PAD']), axis=1)
-        bp_counts = pd.Series(bp_categories).value_counts().sort_index()
-        ax.fill_between(bp_counts.index, bp_counts.values, color='salmon', alpha=0.5)
-        ax.set_xlabel('Índice de Pressão Arterial')
-        ax.set_ylabel('Número de Pessoas')
-        ax.set_title('Distribuição da Pressão Arterial')
-        return fig
+    @render.ui
+    def grafico_imc():
+        df = dados_filtrados()
+        try:
+            if df.empty:
+                return ui.div("Nenhum dado para exibir com os filtros atuais", style="color: red;")
+            
+            # Contagem por classificação de IMC
+            df_counts = df['Classificacao_IMC'].value_counts().reset_index()
+            df_counts.columns = ['Classificacao', 'NumPessoas']
+            df_counts = df_counts.sort_values('Classificacao')
+            
+            # Mapear números para rótulos
+            df_counts['Classificacao_Label'] = df_counts['Classificacao'].apply(lambda x: CLASSIFICACAO_IMC[x])
+            
+            fig = px.bar(
+                df_counts,
+                x="Classificacao_Label",
+                y="NumPessoas",
+                title=f"Gráfico do IMC ({len(df)} pessoas analisadas)",
+                labels={"Classificacao_Label": "Classificação de IMC", "NumPessoas": "Número de Pessoas"},
+                color="Classificacao_Label",
+                color_discrete_sequence=px.colors.sequential.Blues
+            )
+            
+            fig.update_layout(
+                xaxis_title="",
+                yaxis_title="Número de Pessoas",
+                showlegend=False
+            )
+            
+            return ui.HTML(fig.to_html(full_html=False))
+            
+        except Exception as e:
+            print(f"Erro no gráfico de IMC: {e}")
+            return ui.p(f"Erro ao gerar gráfico de IMC: {e}")
 
-# === INICIALIZAÇÃO ===
+    @render.ui
+    def grafico_pressao():
+        df = dados_filtrados()
+        try:
+            if df.empty:
+                return ui.div("Nenhum dado para exibir com os filtros atuais", style="color: red;")
+            
+            # Contagem por classificação de pressão
+            df_counts = df['Classificacao_Pressao'].value_counts().reset_index()
+            df_counts.columns = ['Classificacao', 'NumPessoas']
+            df_counts = df_counts.sort_values('Classificacao')
+            
+            # Mapear números para rótulos
+            df_counts['Classificacao_Label'] = df_counts['Classificacao'].apply(lambda x: CLASSIFICACAO_PRESSAO[x])
+            
+            fig = px.bar(
+                df_counts,
+                x="Classificacao_Label",
+                y="NumPessoas",
+                title=f"Distribuição de Pressão Arterial ({len(df)} pessoas analisadas)",
+                labels={"Classificacao_Label": "Classificação de Pressão", "NumPessoas": "Número de Pessoas"},
+                color="Classificacao_Label",
+                color_discrete_sequence=px.colors.sequential.Reds
+            )
+            
+            fig.update_layout(
+                xaxis_title="",
+                yaxis_title="Número de Pessoas",
+                showlegend=False
+            )
+            
+            return ui.HTML(fig.to_html(full_html=False))
+            
+        except Exception as e:
+            print(f"Erro no gráfico de Pressão: {e}")
+            return ui.p(f"Erro ao gerar gráfico de Pressão: {e}")
+
 app = App(app_ui, server)
